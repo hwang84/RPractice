@@ -1,0 +1,119 @@
+####### Some dplyr
+library(dplyr)
+install.packages("hflights")
+library(hflights)
+
+flights<- as.data.frame(hflights)
+
+### Filter function####
+filter(flights, UniqueCarrier %in% c("AA", "UA"))
+
+
+### Select#####
+
+select(flights, DepTime, ArrTime, FlightNum)
+select(flights, Year:DayofMonth, contains("Taxi"))
+
+
+
+### Select and Filter#####
+flights %>%
+  select(UniqueCarrier, DepDelay) %>%
+  filter(DepDelay >60)
+
+
+### arrange#####
+
+flights %>%
+  select(UniqueCarrier, DepDelay) %>%
+  arrange(desc(DepDelay))
+
+### Mutate#####
+
+
+flights<- flights %>%
+  mutate(speed = Distance/AirTime*60)
+
+
+### Summarise#####
+n()
+n_distinct()
+
+flights %>%
+  group_by(Dest) %>%
+  summarize(ave_delay = mean(ArrDelay, na.rm= TRUE))
+## Summarize mean to multiple columns
+flights %>%
+  group_by(UniqueCarrier) %>%
+  summarise_each(funs(mean), Cancelled, Diverted)
+
+## Summarize min and max to multiple columns by match function to select columns
+flights %>%
+  group_by(UniqueCarrier) %>%
+  summarise_each(funs(min(.,na.rm = TRUE), max(.,na.rm=TRUE)),matches("Delay"))
+
+## Count  n()
+flights %>%
+  group_by(Month, DayofMonth)%>%
+  summarise(flight_count = n())%>%
+  arrange(desc(flight_count))
+
+## Count n_distict()
+flights %>%
+  group_by(Dest) %>%
+  summarise(flight_count = n(), plane_count= n_distinct(TailNum))
+
+## Group without summarising
+flights %>%
+  group_by(Dest) %>%
+  select(Cancelled) %>%
+  table() 
+
+
+
+#### Window function #######
+
+## for each carrier, which 2 days of theyear had longest departure
+flights %>%
+  group_by(UniqueCarrier)%>%
+  select(Month, DayofMonth, DepDelay)%>%
+  filter(min_rank(desc(DepDelay)) <=2 )%>%
+  arrange(UniqueCarrier, desc(DepDelay))
+
+## using top_n function
+flights %>%
+  group_by(UniqueCarrier)%>%
+  select(Month, DayofMonth, DepDelay)%>%
+  top_n(2)%>%
+  arrange(UniqueCarrier, desc(DepDelay))
+
+## Calculate the month diff from last month
+flights %>%
+  group_by(Month)%>%
+  summarise(flight_count = n())%>%
+  mutate(change = flight_count - lag(flight_count))
+
+
+
+#### Other function############
+
+## Sample data
+flights%>% sample_n(5)
+flights %>% sample_frac(0.25, replace = FALSE)
+
+## rename
+flights%>% rename(tail= TailNum)
+
+## Sort dep_delay in each group
+flights%>%
+  group_by(Month, DayofMonth) %>%
+  top_n(3, DepDelay)%>%
+  arrange(desc(DepDelay))
+
+
+
+#### Reshape2
+library(Reshape2)
+
+melt()
+dcast()
