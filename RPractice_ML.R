@@ -1,11 +1,5 @@
 
 
-
-setwd("C:/Users/Han/Desktop/R practice")
-setwd("~/Desktop/ABG")
-
-
-
 #### packages
 install.packages("ggplot2")
 install.packages("ROCR")
@@ -115,6 +109,33 @@ modelperf<- function(ypredict, ytrue, cutoff) {
   
   result<- list(accuracy, ROCRperf, cm)
   }
+
+
+###### Outlier remove#########
+outlier_list<-c()
+
+for (i in 1:length(num_var)){
+  outlier_sub<-data[,c("id",num_var[i])]
+  outlier_sub$mean<-ave(outlier_sub[,2])
+  outlier_sub$sd<-sd(outlier_sub[,2])
+  outlier_sub$lb<-outlier_sub$mean-3*outlier_sub$sd
+  outlier_sub$ub<-outlier_sub$mean+3*outlier_sub$sd
+  outlier_sub$ol<-ifelse(outlier_sub[,2]>outlier_sub$ub,TRUE,
+                         ifelse(outlier_sub[,2]<outlier_sub$lb,TRUE,FALSE))
+  
+  outlier_list_sub<-outlier_sub[outlier_sub$ol==TRUE,"id"]
+  
+  outlier_list<-append(outlier_list,outlier_list_sub)
+  print(length(outlier_list_sub))
+}
+
+length(unique(outlier_list))
+
+outlier_list<-unique(outlier_list)
+
+data<-data[!(data$id %in% outlier_list),]
+churn_in_ol<-data[data$id %in% outlier_list,c("id","churn")]
+
 
 
 ### glmnet package local ########################################################
