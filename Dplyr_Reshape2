@@ -117,3 +117,86 @@ library(Reshape2)
 
 melt()
 dcast()
+
+
+
+#### ggplot2###############################
+### Average age for each occupation
+ggplot(marketing, aes(job, age)) +
+  geom_bar(stat = "summary", fun.y = "mean", color = "black",fill= "grey", width = 0.5) +
+  theme_bw() +
+    labs( y = "Age", 
+        title = "Age Distribution")+
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+##Average age for each occupation with y fill
+ggplot(marketing, aes(job, age, fill = y)) +
+  geom_bar(stat = "summary", fun.y = "mean", width = 0.5) +
+  theme_bw() +
+  labs( y = "Age", 
+        title = "Age Distribution")
+
+
+### density plot
+p <- ggplot(df, aes(x=weight)) + 
+  geom_density() +
+  geom_vline(aes(xintercept=mean(weight)),     # Mean line
+            color="blue", linetype="dashed", size=1) 
+
+# add density line by groups by color
+p<-ggplot(df, aes(x=weight, color=sex)) +
+  geom_density()+
+  geom_vline(data=mu, aes(xintercept=mean, color=sex), # mu is mean for each group
+             linetype="dashed")
+
+
+
+## scatter plot
+# color with scatter plot
+ggplot(data, aes(a,b, color = a)
+  geom_point(shape = 16, size = 5, show.legend = FALSE) +
+  theme_minimal()
+
+# color and transparent alpha
+ggplot(d, aes(a, b, color = pc)) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE, alpha = .4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e")
+
+
+
+
+## bar chart
+ggplot(marketing, aes(job, age, fill = y)) +
+  geom_bar(stat = "summary", fun.y = "mean", width = 0.5) +
+  facet_wrap( ~ marital)
+  theme_bw() +
+  labs( y = "Age", 
+        title = "Age Distribution")
+
+
+
+
+
+
+
+
+
+# color with RcolorBrewer for stacked percent bar
+ggplot(data, aex(fill = condition, y = value, x = specie))+
+  geom_bar(stat = "identity", position  = "fill")+
+  scale_fill_brewer(palette = "Set1)
+ 
+ # Grouped chart
+ggplot(data, aes(fill = condition, y=value, x=specie))+
+  geom_bar(postion = "dodge", stat = "identity")
+ 
+ 
+ 
+ # Faceting#
+ ggplot(data, aes(y= value, x= specie, color = specie, fill = specie))+
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition)
+
+
