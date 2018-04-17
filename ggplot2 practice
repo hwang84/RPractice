@@ -1,0 +1,41 @@
+#### Data Visualization #############################
+
+### Average age for each occupation
+ggplot(marketing, aes(job, age)) +
+  geom_bar(stat = "summary", fun.y = "mean", color = "black",fill= "grey", width = 0.5) +
+  theme_bw() +
+    labs( y = "Age", 
+        title = "Age Distribution")+
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+
+## 
+ggplot(marketing, aes(job, age, fill = y)) +
+  geom_bar(stat = "summary", fun.y = "mean", width = 0.5) +
+  theme_bw() +
+  labs( y = "Age", 
+        title = "Age Distribution")
+
+
+##
+ggplot(marketing, aes(job, age, fill = y)) +
+  geom_bar(stat = "summary", fun.y = "mean", width = 0.5) +
+  facet_wrap( ~ marital)
+  theme_bw() +
+  labs( y = "Age", 
+        title = "Age Distribution")
+geom_density()
+
+
+
+## PLot number of days have a code
+ggplot(days, aes(n))+
+  geom_histogram(color="black", fill="grey",binwidth = 1) +
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5), 
+        plot.subtitle = element_text(hjust = 0.5)) +
+  labs(title = "Number of Days Generated DTC codes",
+     subtitle = "Number of Cars: 13,406",
+     caption = "", 
+     x = "Number of Days", y = "VIN") 
