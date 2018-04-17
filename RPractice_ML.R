@@ -20,31 +20,6 @@ head(marketing)
 summary(marketing)
 
 
-#### Data Visualization #############################
-
-### Average age for each occupation
-ggplot(marketing, aes(job, age)) +
-  geom_bar(stat = "summary", fun.y = "mean", color = "black",fill= "grey", width = 0.5) +
-  theme_bw() +
-    labs( y = "Age", 
-        title = "Age Distribution")+
-  theme(plot.title = element_text(hjust = 0.5),
-        plot.subtitle = element_text(hjust = 0.5))
-
-ggplot(marketing, aes(job, age, fill = y)) +
-  geom_bar(stat = "summary", fun.y = "mean", width = 0.5) +
-  theme_bw() +
-  labs( y = "Age", 
-        title = "Age Distribution")
-
-ggplot(marketing, aes(job, age, fill = y)) +
-  geom_bar(stat = "summary", fun.y = "mean", width = 0.5) +
-  facet_wrap( ~ marital)
-  theme_bw() +
-  labs( y = "Age", 
-        title = "Age Distribution")
-geom_density()
-
 
 ####Data preparation##################################
 ## Training and Testing
@@ -105,7 +80,7 @@ modelperf<- function(ypredict, ytrue, cutoff) {
   tnr<- sum(yresult == 0 & ytrue == 0)/sum(ytrue == 0)
   cm<- matrix(c(tnr, (1- tpr), (1- tnr),tpr), ncol = 2)  
   rownames(cm)<- c("Actual: No", "Actual: Yes")            
-  colnames(cm)<- c("Predicted: No", "Predicted: Yes")
+  colnames(cm)<- c("Predicted: No", "Predicted: Yes")   ### as.data.frame may be needed here
   
   result<- list(accuracy, ROCRperf, cm)
   }
@@ -339,6 +314,19 @@ h2o.varimp_plot(model_bayes)
 
 
 
+### AutoML
+aml <- h2o.automl(x = x_ind, y = y_dep,
+                  training_frame = train_h2o,
+                  leaderboard_frame = test_h2o,
+                  max_runtime_secs = 60)
+
+aml@leaderboard
+aml@leader
+
+bestmodel<- aml@leader
+
+
+
 ### GBM
 model_gbm<-h2o.gbm(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o, seed = 1234)
 model_gbm
@@ -433,26 +421,28 @@ final<- as.data.frame(final)
 
 ##########Loss function ###################################
 
-eval_estimate<- function(estimate,truth,loss_FP,loss_FN){
-  FP=sum((!truth) & (truth!=estimate))
-  FN=sum((truth) & (truth!=estimate))
-  TP=sum((truth) & (truth==estimate))
-  TN=sum((!truth) & (truth==estimate))
-  sens=TP/(TP+FN)
-  spec=TN/(TN+FP)
-  loss=loss_FP*FP+loss_FN*FN
-} 
-
-
-loss = data.frame()
-cuts = data.frame()
-for (cut in seq(0, 0.5, by=0.01)){
-  res = eval_estimate(ypredprob > cut,ytrue,loss_FP,loss_FN)
-  loss = rbind(loss,res)
-  cuts = rbind(cuts,cut)
+## Create loss function
+costfun<- function(threshold, predict, truth, FPcost, TPcost, FNcost){
+  data<- data.frame(predict, truth)
+  data$res<- ifelse(data$predict>=threshold, 1,0)
+  FP <- nrow(data[data$res == 1 & data$truth ==0,])
+  FN <- nrow(data[data$res == 0 & data$truth ==1,])
+  TP <-  nrow(data[data$res == 1 & data$truth ==1,])
+  cost<- FPcost*FP + TPcost * TP + FNcost * FN
+  return(cost)
 }
-cuts_loss = cbind(cuts,loss)
-cuts[which.min(loss)]
+
+## Go throught threshold to minimize cost
+projectedcost<- data.frame()
+threshold <- list(0)
+cost<- list(0)
+for (i in seq(0, 0.5, by=0.001)){
+  threshold<- append(threshold,i)
+  cost<- append(cost, costfun(i, predict =predict$p1, truth = predict$`test$maintenance`, 30,20,150))
+  }
+projectedcost<- as.data.frame(cbind(threshold, cost))
+View(projectedcost)
+
 
 
 
