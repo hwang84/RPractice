@@ -1,5 +1,15 @@
 #### Data Visualization #############################
 
+### Line chart with highlighted min point
+
+ggplot(projectedcost, aes(threshold, cost))+
+  geom_line() +scale_y_continuous(labels = comma)+
+  geom_point(data = projectedcost[which.min(projectedcost$cost),], aes(threshold, cost), colour="red", size=1.5)+
+  theme_bw()+
+  labs(title = "Projected Cost with Random Forest Model",
+       x = "Threshold", y = "Cost") 
+
+
 ### Average age for each occupation
 ggplot(marketing, aes(job, age)) +
   geom_bar(stat = "summary", fun.y = "mean", color = "black",fill= "grey", width = 0.5) +
