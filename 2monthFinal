@@ -1,0 +1,1397 @@
+######################### 2month ERO data##################################
+
+
+setwd("C:/Users/wanghan/Desktop/Connected Cars")
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+
+
+##### DTC code##### 
+dtc<- read.csv("total_dtc.csv")
+head(dtc)
+
+# Parse date and select July and August only
+dtc$Date<- as.Date(dtc$Date, "%Y-%m-%d")
+dtc<- dtc[dtc$Date>= "2017-05-31" & dtc$Date <= "2017-08-30",]
+dtc$DTC_CODE<- as.character (dtc$DTC_CODE)
+
+dtc <- subset(dtc, select = c(2,5,6))
+
+# Transform dtc code
+dtc$value<- 1
+dtc.trans<- melt(dtc, id= 1:3)
+dtc.trans<- acast(dtc.trans, VIN + Date ~ DTC_CODE, sum)
+
+dtc.trans<- as.data.frame(dtc.trans)
+dtc.trans$id<- row.names(dtc.trans)
+
+# Split id to create vin and date
+dtc.trans$VIN<- sapply(FUN = function(x){
+  unlist(strsplit(x, "_"))[1]}, dtc.trans$id)
+
+dtc.trans$date<- sapply(FUN = function(x){
+  unlist(strsplit(x, "_"))[2]}, dtc.trans$id)
+# Manage row names and columns 
+rownames(dtc.trans) <- 1:nrow(dtc.trans)
+dtc.trans$id<- NULL
+dtc.trans<-dtc.trans[,c(ncol(dtc.trans)-1, ncol(dtc.trans), (1:(ncol(dtc.trans)-2)))]
+
+
+
+
+##### ERO DATA#####
+ero <- read.csv("DC_ERO_SUMMARY.csv")
+nrow(ero)
+
+# Deduplicate
+# ero<- ero [!duplicated(ero), ]
+# nrow(ero)
+
+##Select RO with only DTC VINs
+nrow(ero)
+ero<- subset(ero, ero$VIN %in% unique(dtc.trans$VIN))
+nrow(ero)
+
+
+# Filter on date
+ero$RO_OPENED <- as.Date(ero$RO_OPENED, format="%Y-%m-%d")
+ero.aug<- ero[(ero$RO_OPENED>= "2017-07-01" & ero$RO_OPENED<= "2017-08-31"), ]
+nrow(ero.aug)
+
+
+# remove city = AVIS according to business
+ero.aug <- ero.aug[ero.aug$CITY!= "AVIS", ]
+
+# Select only related columns
+ero.aug<- ero.aug[,c(1,4,6,7,13,17,21)]
+
+
+## Further cleansing ERO data
+# if same day, same car, exact cost, then remove duplicate
+ero.aug<- ero.aug %>%
+  distinct(VIN, RO_OPENED, RO_TOTAL, .keep_all = TRUE)
+nrow(ero.aug)
+# if same day, same car, different cost, then sum up
+ero.aug<- ero.aug %>% 
+  group_by(VIN, RO_OPENED) %>%
+  summarise_all(funs(sum))
+nrow(ero.aug)
+
+write.csv(ero.aug, file = "ero_2months.csv")
+
+# ID 0 NID NOT 0
+ero.aug<- ero.aug[ero.aug$NID_TOTAL != 0 & ero.aug$ID_TOTAL == 0,]
+
+ero.aug$unique<- paste(ero.aug$VIN, ero.aug$RO_NUMBER, ero.aug$RO_OPENED)
+nrow(ero.aug)
+head(ero.aug)
+
+
+## further remove maintenance event
+erodetail<- read.csv("VIEW_DC_ERO_DATA.csv")
+
+#Unique identifier
+erodetail<- subset(erodetail, select = c(2,4,7,8,14,15))
+erodetail$unique<-paste(erodetail$VIN, erodetail$RO_NUMBER, erodetail$RO_OPENED)
+
+#Filter on only ERO from erolist on erodetail file  
+
+erodetail<- subset(erodetail, erodetail$unique %in% ero.aug$unique)
+
+#### go through RM list to classify RM from failure event
+library(dplyr)
+rmlist<- read.csv("Maintenance_codes.csv")
+erodetail$RM <- ifelse(erodetail$OP_CODE %in% rmlist$code, 1, 0)
+
+erolevel<- erodetail %>% 
+  group_by(unique, REGION, VIN, RO_NUMBER, RO_OPENED) %>%
+  summarise(total= n(), rmcount= sum(RM), cost = sum(RO_TOTAL))
+
+erolevel$perc<- round(erolevel$rmcount/erolevel$total,2)
+
+erolevel$event<- ifelse(erolevel$perc == 0, "Failure", 
+                        ifelse(erolevel$perc ==1, "RM", "Mixed"))
+
+## Remove purely RM events from ro list for 2 months
+
+erolevel_norm<- erolevel[(erolevel$event == "Failure" | erolevel$event == "Mixed"), ]
+
+ero.aug<- subset(ero.aug, ero.aug$unique %in% erolevel_norm$unique)
+
+ero.aug$unique<- NULL
+
+
+
+##### Join DTC data and RO data
+## Prepare ero.aug with time range
+ero.tr<- ero.aug[,c(1,2)]
+ero.tr$RO_OPENED<- as.Date(ero.tr$RO_OPENED)
+ero.tr$datestart<- ero.tr$RO_OPENED-31
+ero.tr$dateend<- ero.tr$RO_OPENED-1
+ero.tr$maintenance<- 1
+head(ero.tr)
+
+## Prepare RO full list
+daterange<- seq(as.Date("2017-06-30"), as.Date("2017-08-30"), "days")
+vin<- unique(ero.aug$VIN)
+fulldate<- expand.grid(VIN = vin, date =  daterange)
+head(fulldate)
+# Process date variables
+fulldate$datestart<- fulldate$date-30
+fulldate$dateend<- fulldate$date
+fulldate$date<- NULL
+head(fulldate)
+
+
+# merge full date list with positive maintenance event
+full<- merge(x= fulldate, y = ero.tr, by = c("VIN", "datestart","dateend"), all.x = TRUE)
+
+full$RO_OPENED<- NULL
+full$maintenance<- ifelse(is.na(full$maintenance), 0, 1)
+
+
+##Join with DTC code
+head(dtc.trans)
+head(full)
+dtc.trans$date<- as.Date(dtc.trans$date)
+
+### using apply to subset dtc code data frame
+install.packages("pbapply")
+library(pbapply)
+
+# Define subset function to parse through dtc code for each period
+subfun<- function(x, y){
+  dtcmatch<- subset(y, y$VIN == x[1] & 
+                      y$date >= x[2] &
+                      y$date <= x[3], 
+                    select = -c(VIN, date)) 
+  dtcmatch<- t(colSums(dtcmatch))
+}
+
+
+# pbapply through 2 month ro list
+  # 220100 number of rows for RO list(full)
+combined<- pbapply(full, 1, function(x) subfun(x, dtc.trans))
+
+
+# process combined data
+combined_df<- as.data.frame(t(combined))
+colnames(combined_df)<- colnames(dtc.trans[,3:ncol(dtc.trans)])
+
+# Combine with fulldata columns (VIN, dates, maintenance)
+fulldata<- cbind(full, combined_df)
+ 
+# number of row on fulldata is : 220100
+nrow(fulldata)
+
+### Remove duplicate/bad record
+
+## Remove columns/codes that are all 0 
+fulldata<- fulldata[,!apply(fulldata,2,function(x) all(x==0))] 
+
+## Remove rows that codes are all 0
+fulldata$sum<- rowSums(fulldata[, 5:ncol(fulldata)])
+fulldata<- subset(fulldata, fulldata$sum!= 0)
+fulldata$sum<- NULL
+
+
+## Save fulldata for 2 month#
+# still need to be parsed for same code rows
+write.csv(fulldata, "2months_raw.csv", row.names = FALSE)
+
+
+###Process fulldata to remove duplicate rows having same code#####
+# but keep if maintenance changes
+
+ncol(fulldata)
+nrow(fulldata)
+
+## append last day's data to following columns
+fulldatasub<- fulldata[,c(1, 4:351)]
+
+fulldatafirst<- fulldatasub[1,]
+
+fulldatasub<- rbind(fulldatafirst, fulldatasub)
+fulldatasub<- fulldatasub[1: (nrow(fulldatasub)-1),]
+
+colnames(fulldatasub) <- paste("t", colnames(fulldatasub), sep = "_")
+
+## combine last days data to fulldata dataframe
+
+fulldata_t<- cbind(fulldata, fulldatasub)
+
+
+#Define check same function in each row comparing code and last day code
+checksame<- function(x){
+  same<-ifelse(all(x[c(1,4:351)] == x[c(352,353:700)]),
+                                          0,
+                                          ifelse(all(x[c(1,5:351)] == x[c(352,354:700)])& x[4]==0,0,1))
+}
+
+## pbapply to all data in fulldata
+
+same<- pbapply(fulldata_t, 1, function(x) checksame(x))
+
+
+
+# Parse result to cbind to fulldata data frame
+same<- as.data.frame(same)
+fulldata<- cbind(fulldata,same)
+
+# Assign the first record to be 1 as well
+fulldata[1,ncol(fulldata)]<- 1
+
+# Check same column distribution; 0 means same, 1 means different to keep
+data.frame(table(fulldata$same))
+
+
+ 
+fulldata<- subset(fulldata, same == 1)
+
+
+nrow(fulldata)
+
+## Write csv
+
+write.csv(fulldata, file = "2month_joinedDTC_0428.csv", row.names = FALSE)
+
+fulldata<-  read.csv("2month_joinedDTC_0428.csv")
+
+
+
+##### Join Telemetic data to 2month data#####################################
+library(dplyr)
+head(fulldata)
+fulldata$dateend<- as.Date(fulldata$dateend)
+
+## Clean/select only needed columns
+tele<- read.csv("telematic_f.csv")
+tele<- subset(tele, tele$vin_no %in% unique(fulldata$VIN))
+
+
+tele<- select(tele,  VIN = vin_no, odo = odometer_in_miles,teledate = dw_last_upd_dtti ,tp_lf = tire_pressure_in_kpa_lf,
+              tp_rf = tire_pressure_in_kpa_rf,  tp_lr = tire_pressure_in_kpa_lr,  tp_rr = tire_pressure_in_kpa_rr, 
+              oillife = remaining_oil_life)
+
+head(tele)
+## date parse
+tele$teledate<- as.Date(tele$teledate, format = "%Y-%m-%d %H:%M:%S.000000")
+
+
+## Summarize on day level
+telebyday<- tele%>%
+  group_by(VIN, teledate)%>%
+  summarise(count= n(), odo = max(odo), tp_lf = mean(tp_lf),tp_rf = mean(tp_rf),tp_lr = mean(tp_lr),tp_rr = mean(tp_rr),
+            oillife = min(oillife))
+
+
+##Incorporate delta for odometer and tire pressure
+telebyday <- telebyday %>%
+  group_by(VIN)%>%
+  mutate(count= n(), ododelta =  odo - lag(odo), tpdelta = (tp_lf-lag(tp_lf)+tp_rf-lag(tp_rf)+tp_lr-lag(tp_lr)+tp_rr-lag(tp_rr))/4)
+
+
+
+
+sum(is.na(telebyday$oillife))
+nrow(telebyday)
+
+## append 
+joined<- left_join(fulldata, telebyday, by = c("VIN"= "VIN", "dateend" = "teledate"))
+
+# ### Remove oil life for now
+# joined$oillife<- NULL
+
+
+### 
+sum(is.na(joined$count))
+
+
+joined_cmplt<- joined[complete.cases(joined),]
+nrow(joined)
+nrow(joined_cmplt)
+
+## Save a copy
+
+head(joined_cmplt)
+write.csv(joined_cmplt, file = "2months_tele_0428.csv", row.names = FALSE)
+
+# 
+joined_cmplt<- read.csv("2months_tele_0428.csv")
+nrow(joined_cmplt)
+
+fulldata<- joined_cmplt
+
+
+
+#### Join with make year model by vin#########################################
+library(dplyr)
+# Unique Vin from fulldata
+nrow(fulldata)
+length(unique(fulldata$VIN))
+
+
+vehicleinfo <- read.csv("fleetinfo_matched.csv")
+length(unique(vehicleinfo$VIN_NO))
+# Select only useful columns
+vehicleinfo<- select(vehicleinfo,  VIN = VIN_NO, makemodel = MAKE_MODEL_DESC,vehicledate = VEHICLE_DELIVERY_DATE,
+                     class= CAR_CLASS_CODE, style = WIZ_BODY_TYPE_CODE, color = EXT_COLOR_CODE)
+vehicleinfo$vehicledate<- as.Date(vehicleinfo$vehicledate)
+
+# Select by first date to remove duplicate
+vehicleinfo<- vehicleinfo%>%
+  group_by(VIN)%>%
+  arrange(vehicledate) %>%
+  filter(row_number()==1)
+
+
+# append vehicle info to fulldata 
+
+fulldatavehicle<- left_join(fulldata, vehicleinfo, by = c("VIN" = "VIN"))
+
+# Calculate vehicle age in months
+library(zoo)
+
+fulldatavehicle$age<- (as.yearmon(strptime(fulldatavehicle$dateend, format = "%Y-%m-%d"))-
+                      as.yearmon(strptime(fulldatavehicle$vehicledate, format = "%Y-%m-%d")))*12
+
+# remove vehicle date variable
+fulldatavehicle$vehicledate<- NULL
+head(fulldatavehicle)
+
+datafinal<- fulldatavehicle
+head(datafinal)
+
+### Modeling #########################################################
+
+## Prepare data for h2o
+
+datafinal<- datafinal[, !(colnames(datafinal) %in% c("datestart","same","dateend", "VIN", "count"))]
+datafinal$maintenance <- as.factor(datafinal$maintenance)
+
+## 0, 1 distribution
+data.frame(table(datafinal$maintenance))
+
+## Split training and testing set
+set.seed(1234)
+
+# Training and Testing
+data_y<- datafinal[datafinal$maintenance == "1",]
+data_n<- datafinal[datafinal$maintenance == "0",]
+
+ysub<- sample(nrow(data_y), floor(nrow(data_y)*0.8))
+nsub<- sample(nrow(data_n), floor(nrow(data_n)*0.8))
+
+train_yes<- data_y[ysub,]
+train_no<- data_n[nsub,]
+
+test_yes<- data_y[-ysub,]
+test_no<- data_n[-nsub,]
+
+train<- rbind(train_yes, train_no)
+test<- rbind(test_yes, test_no)
+
+nrow(datafinal)-  nrow(train)- nrow(test)
+
+# h2o training and testing
+
+library(h2o)
+h2o <- h2o.init()
+
+##
+train_h2o <- as.h2o(train)
+test_h2o<- as.h2o(test)
+train_h2o$maintenance<- as.factor(train_h2o$maintenance)
+# dependent variable index
+y_dep<- match("maintenance",colnames(train_h2o))
+# independent variable index
+x_ind<- c(2:(ncol(train)-1))
+
+model_rf<-h2o.randomForest(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o,seed = 1234, nfolds = 5)
+model_gbm<-h2o.gbm(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o, seed = 1234, nfolds = 5)
+model_dl<-h2o.deeplearning(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o,
+                           reproducible = T, seed = 123, balance_classes = F, nfolds = 5)
+model_bayes<-h2o.naiveBayes(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o, seed = 1234, nfolds = 5)
+model_logistic<-h2o.glm(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o, family = "binomial",seed = 1234, nfolds = 5)
+model_lasso<-h2o.glm(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o, family = "binomial",
+                     seed = 1234, alpha = 1, lambda_search = TRUE, nlambdas = 100, nfolds = 5)
+model_ridge<-h2o.glm(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o, family = "binomial",
+                     seed = 1234, alpha = 0, lambda_search = TRUE, nlambdas = 100, nfolds = 5)
+
+# model_gbm_bal<-h2o.gbm(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o, balance_classes = TRUE, seed = 1234)
+
+model_rf
+model_gbm
+model_dl
+model_bayes
+model_logistic
+model_lasso
+model_ridge
+
+
+model_gbm_bal<-h2o.gbm(x=x_ind,y=y_dep,training_frame=train_h2o,validation_frame=test_h2o, balance_classes = TRUE, seed = 1234)
+model_gbm_bal
+
+h2o.varimp_plot(model_rf)
+h2o.varimp_plot(model_gbm)
+h2o.varimp_plot(model_dl)
+h2o.varimp_plot(model_logistic)
+h2o.varimp_plot(model_lasso)
+h2o.varimp_plot(model_ridge)
+
+
+
+# alltrain <- as.h2o(datafinal)
+# 
+# model_rf_cv<-h2o.randomForest(x=x_ind,y=y_dep,training_frame=train_h2o,seed = 1234, nfolds = 5)
+# model_gbm_cv<-h2o.gbm(x=x_ind,y=y_dep,training_frame=train_h2o, seed = 1234, nfolds = 5)
+# model_dl_cv<-h2o.deeplearning(x=x_ind,y=y_dep,training_frame=train_h2o,
+#                            reproducible = T, seed = 123, balance_classes = F, nfolds = 5)
+# model_bayes_cv<-h2o.naiveBayes(x=x_ind,y=y_dep,training_frame=train_h2o, seed = 1234, nfolds = 5)
+# model_logistic_cv<-h2o.glm(x=x_ind,y=y_dep,training_frame=train_h2o, family = "binomial",seed = 1234, nfolds = 5)
+# model_lasso_cv<-h2o.glm(x=x_ind,y=y_dep,training_frame=train_h2o, family = "binomial",
+#                      seed = 1234, alpha = 1, lambda_search = TRUE, nlambdas = 100, nfolds = 5)
+# model_ridge_cv<-h2o.glm(x=x_ind,y=y_dep,training_frame=train_h2o,family = "binomial",
+#                      seed = 1234, alpha = 0, lambda_search = TRUE, nlambdas = 100, nfolds = 5)
+# 
+# model_rf
+# model_gbm
+# model_dl
+# model_bayes
+# model_logistic
+# model_lasso
+# model_ridge
+
+
+
+# 
+model_gbm
+h2o.varimp_plot(model_gbm)
+# 
+# ## Auto ML
+# aml <- h2o.automl(x = x_ind, y = y_dep,
+#                   training_frame = train_h2o,
+#                   leaderboard_frame = test_h2o,
+#                   max_runtime_secs = 60*20)
+# 
+# aml@leaderboard
+# aml@leader
+# bestmodel<- aml@leader
+
+# h2o.shutdown(prompt = TRUE)
+
+##### Projected Savings#################
+# Use Randomized Selected 30% of data to validate
+data.frame(table(test$maintenance))
+
+# Assumptions: Missed case: $120 repair + $125 tow cost
+#              Successfully predicted cases: $ 65 repair, tow cost saved
+#              False alarms: $20 inspection
+
+
+model_gbm
+h2o.varimp_plot(model_gbm)
+
+
+## Predict using the best model
+predict<- h2o.predict(model_gbm, newdata = test_h2o)
+predict<- as.data.frame(predict)
+predict<- cbind(predict, test$maintenance)
+
+nrow(predict[predict$predict == 1 & predict$`test$maintenance` ==1|
+               predict$predict == 0 & predict$`test$maintenance` ==0,])
+
+nrow(predict[predict$predict == 1 & predict$`test$maintenance` ==1,])
+nrow(predict[predict$predict == 1 & predict$`test$maintenance` ==0,])
+nrow(predict[predict$predict == 0 & predict$`test$maintenance` ==1,])
+
+data.frame(table(test$maintenance))
+
+## Find proper threshold by introducing loss function
+
+
+# create function to calculate cost for at each threshold
+costfun<- function(threshold, predict, truth, FPcost, TPcost, FNcost){
+  data<- data.frame(predict, truth)
+  data$res<- ifelse(data$predict>=threshold, 1,0)
+  FP <- nrow(data[data$res == 1 & data$truth ==0,])
+  FN <- nrow(data[data$res == 0 & data$truth ==1,])
+  TP <-  nrow(data[data$res == 1 & data$truth ==1,])
+  cost<- FPcost*FP + TPcost * TP + FNcost * FN
+  return(cost)
+}
+
+## go through threshold to minimize cost
+projectedcost<- data.frame()
+threshold <- list(0)
+cost<- list(0)
+for (i in seq(0, 1, by=0.001)){
+  threshold<- append(threshold,i)
+  cost<- append(cost, costfun(i, predict =predict$p1, truth = predict$`test$maintenance`, 33, 100,255))
+}
+projectedcost<- as.data.frame(cbind(threshold, cost))
+
+
+# Visulization###
+library(ggplot2)
+library(scales)
+
+
+projectedcost<- projectedcost[-1,]
+
+projectedcost$threshold<- as.numeric(projectedcost$threshold)
+projectedcost$cost<- as.numeric(projectedcost$cost)
+
+ggplot(projectedcost, aes(threshold, cost))+
+  geom_line() +scale_y_continuous(labels = comma)+
+  geom_point(data = projectedcost[which.min(projectedcost$cost),], aes(threshold, cost), colour="red", size=1.5)+
+  theme_bw()+
+  labs(title = "Projected Cost with GBM Model",
+       x = "Threshold", y = "Cost") 
+
+projectedcost[which.min(projectedcost$cost),]
+
+
+
+min(projectedcost$cost)
+
+
+
+predict$newres<- ifelse(predict$p1>=0.301, 1,0)
+
+FP <- nrow(predict[predict$newres == 1 & predict$`test$maintenance` ==0,])
+FN <- nrow(predict[predict$newres == 0 & predict$`test$maintenance` ==1,])
+TP <-  nrow(predict[predict$newres == 1 & predict$`test$maintenance` ==1,])
+TN<- nrow(predict[predict$newres == 0 & predict$`test$maintenance` ==0,])
+
+confusionmatrix<- matrix(c(TN, FP, FN, TP),ncol =2,byrow=TRUE)
+colnames(confusionmatrix) <- c("0", "1")
+rownames(confusionmatrix) <- c("0", "1")
+confusionmatrix
+
+
+
+
+
+
+
+
+
+# h2o.shutdown(prompt = TRUE)
+
+########Validating on other month#########################################
+
+
+## October as Validation set###########
+
+setwd("C:/Users/wanghan/Desktop/Connected Cars")
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+
+
+##### DTC code##### 
+dtc<- read.csv("total_dtc.csv")
+head(dtc)
+
+# Parse date and select July and August only
+dtc$Date<- as.Date(dtc$Date, "%Y-%m-%d")
+dtc<- dtc[dtc$Date>= "2017-08-31" & dtc$Date <= "2017-10-31",]
+dtc$DTC_CODE<- as.character (dtc$DTC_CODE)
+
+dtc <- subset(dtc, select = c(2,5,6))
+
+# Transform dtc code
+dtc$value<- 1
+dtc.trans<- melt(dtc, id= 1:3)
+dtc.trans<- acast(dtc.trans, VIN + Date ~ DTC_CODE, sum)
+
+dtc.trans<- as.data.frame(dtc.trans)
+dtc.trans$id<- row.names(dtc.trans)
+
+# Split id to create vin and date
+dtc.trans$VIN<- sapply(FUN = function(x){
+  unlist(strsplit(x, "_"))[1]}, dtc.trans$id)
+
+dtc.trans$date<- sapply(FUN = function(x){
+  unlist(strsplit(x, "_"))[2]}, dtc.trans$id)
+# Manage row names and columns 
+rownames(dtc.trans) <- 1:nrow(dtc.trans)
+dtc.trans$id<- NULL
+dtc.trans<-dtc.trans[,c(ncol(dtc.trans)-1, ncol(dtc.trans), (1:(ncol(dtc.trans)-2)))]
+
+
+
+
+##### ERO DATA#####
+ero <- read.csv("DC_ERO_SUMMARY.csv")
+nrow(ero)
+
+# Deduplicate
+# ero<- ero [!duplicated(ero), ]
+# nrow(ero)
+
+##Select RO with only DTC VINs
+nrow(ero)
+ero<- subset(ero, ero$VIN %in% unique(dtc.trans$VIN))
+nrow(ero)
+
+
+# Filter on date
+ero$RO_OPENED <- as.Date(ero$RO_OPENED, format="%Y-%m-%d")
+ero.oct<- ero[(ero$RO_OPENED>= "2017-10-01" & ero$RO_OPENED<= "2017-10-31"), ]
+nrow(ero.oct)
+
+
+# remove city = AVIS according to business
+ero.oct <- ero.oct[ero.oct$CITY!= "AVIS", ]
+
+# Select only related columns
+ero.oct<- ero.oct[,c(1,4,6,7,13,17,21)]
+
+
+## Further cleansing ERO data
+# if same day, same car, exact cost, then remove duplicate
+ero.oct<- ero.oct %>%
+  distinct(VIN, RO_OPENED, RO_TOTAL, .keep_all = TRUE)
+nrow(ero.oct)
+# if same day, same car, different cost, then sum up
+ero.oct<- ero.oct %>% 
+  group_by(VIN, RO_OPENED) %>%
+  summarise_all(funs(sum))
+nrow(ero.oct)
+
+
+# ID 0 NID NOT 0
+ero.oct<- ero.oct[ero.oct$NID_TOTAL != 0 & ero.oct$ID_TOTAL == 0,]
+
+ero.oct$unique<- paste(ero.oct$VIN, ero.oct$RO_NUMBER, ero.oct$RO_OPENED)
+nrow(ero.oct)
+head(ero.oct)
+
+
+## further remove maintenance event
+erodetail<- read.csv("VIEW_DC_ERO_DATA.csv")
+
+#Unique identifier
+erodetail<- subset(erodetail, select = c(2,4,7,8,14,15))
+erodetail$unique<-paste(erodetail$VIN, erodetail$RO_NUMBER, erodetail$RO_OPENED)
+
+#Filter on only ERO from erolist on erodetail file  
+
+erodetail<- subset(erodetail, erodetail$unique %in% ero.oct$unique)
+
+#### go through RM list to classify RM from failure event
+library(dplyr)
+rmlist<- read.csv("Maintenance_codes.csv")
+erodetail$RM <- ifelse(erodetail$OP_CODE %in% rmlist$code, 1, 0)
+
+erolevel<- erodetail %>% 
+  group_by(unique, REGION, VIN, RO_NUMBER, RO_OPENED) %>%
+  summarise(total= n(), rmcount= sum(RM), cost = sum(RO_TOTAL))
+
+erolevel$perc<- round(erolevel$rmcount/erolevel$total,2)
+
+erolevel$event<- ifelse(erolevel$perc == 0, "Failure", 
+                        ifelse(erolevel$perc ==1, "RM", "Mixed"))
+
+## Remove purely RM events from ro list for 2 months
+
+erolevel_norm<- erolevel[(erolevel$event == "Failure" | erolevel$event == "Mixed"), ]
+
+ero.oct<- subset(ero.oct, ero.oct$unique %in% erolevel_norm$unique)
+
+ero.oct$unique<- NULL
+
+
+
+##### Join DTC data and RO data
+## Prepare ero.aug with time range
+ero.tr<- ero.oct[,c(1,2)]
+ero.tr$RO_OPENED<- as.Date(ero.tr$RO_OPENED)
+ero.tr$datestart<- ero.tr$RO_OPENED-31
+ero.tr$dateend<- ero.tr$RO_OPENED-1
+ero.tr$maintenance<- 1
+head(ero.tr)
+
+## Prepare RO full list
+daterange<- seq(as.Date("2017-09-30"), as.Date("2017-10-30"), "days")
+vin<- unique(ero.oct$VIN)
+fulldate<- expand.grid(VIN = vin, date =  daterange)
+head(fulldate)
+# Process date variables
+fulldate$datestart<- fulldate$date-30
+fulldate$dateend<- fulldate$date
+fulldate$date<- NULL
+head(fulldate)
+
+
+# merge full date list with positive maintenance event
+full<- merge(x= fulldate, y = ero.tr, by = c("VIN", "datestart","dateend"), all.x = TRUE)
+
+full$RO_OPENED<- NULL
+full$maintenance<- ifelse(is.na(full$maintenance), 0, 1)
+
+
+##Join with DTC code
+head(dtc.trans)
+head(full)
+dtc.trans$date<- as.Date(dtc.trans$date)
+
+### using apply to subset dtc code data frame
+
+library(pbapply)
+
+# Define subset function to parse through dtc code for each period
+subfun<- function(x, y){
+  dtcmatch<- subset(y, y$VIN == x[1] & 
+                      y$date >= x[2] &
+                      y$date <= x[3], 
+                    select = -c(VIN, date)) 
+  dtcmatch<- t(colSums(dtcmatch))
+}
+
+
+# pbapply through 2 month ro list
+# 220100 number of rows for RO list(full)
+combined<- pbapply(full, 1, function(x) subfun(x, dtc.trans))
+
+
+# process combined data
+combined_df<- as.data.frame(t(combined))
+colnames(combined_df)<- colnames(dtc.trans[,3:ncol(dtc.trans)])
+
+# Combine with fulldata columns (VIN, dates, maintenance)
+fulldata<- cbind(full, combined_df)
+
+# number of row on fulldata is : 220100
+nrow(fulldata)
+
+### Remove duplicate/bad record
+
+## Remove columns/codes that are all 0 
+fulldata<- fulldata[,!apply(fulldata,2,function(x) all(x==0))] 
+
+## Remove rows that codes are all 0
+fulldata$sum<- rowSums(fulldata[, 5:ncol(fulldata)])
+fulldata<- subset(fulldata, fulldata$sum!= 0)
+fulldata$sum<- NULL
+
+
+
+
+
+###Process fulldata to remove duplicate rows having same code#####
+# but keep if maintenance changes
+
+ncol(fulldata)
+nrow(fulldata)
+
+## append last day's data to following columns
+fulldatasub<- fulldata[,c(1, 4:255)]
+
+fulldatafirst<- fulldatasub[1,]
+
+fulldatasub<- rbind(fulldatafirst, fulldatasub)
+fulldatasub<- fulldatasub[1: (nrow(fulldatasub)-1),]
+
+colnames(fulldatasub) <- paste("t", colnames(fulldatasub), sep = "_")
+
+## combine last days data to fulldata dataframe
+
+fulldata_t<- cbind(fulldata, fulldatasub)
+
+
+#Define check same function in each row comparing code and last day code
+checksame<- function(x){
+  same<-ifelse(all(x[c(1,4:255)] == x[c(256,257:508)]),
+               0,
+               ifelse(all(x[c(1,5:255)] == x[c(256,258:508)])& x[4]==0,0,1))
+}
+
+## pbapply to all data in fulldata
+
+same<- pbapply(fulldata_t, 1, function(x) checksame(x))
+
+
+
+# Parse result to cbind to fulldata data frame
+same<- as.data.frame(same)
+fulldata<- cbind(fulldata,same)
+
+# Assign the first record to be 1 as well
+fulldata[1,ncol(fulldata)]<- 1
+
+# Check same column distribution; 0 means same, 1 means different to keep
+data.frame(table(fulldata$same))
+
+
+
+fulldata<- subset(fulldata, same == 1)
+
+
+nrow(fulldata)
+
+
+
+
+##### Join Telemetic data to validation month data#####################################
+library(dplyr)
+head(fulldata)
+fulldata$dateend<- as.Date(fulldata$dateend)
+
+## Clean/select only needed columns
+tele<- read.csv("telematic_oct.csv")
+tele<- subset(tele, tele$vin_no %in% unique(fulldata$VIN))
+
+
+tele<- select(tele,  VIN = vin_no, odo = odometer_in_miles,teledate = dw_last_upd_dtti ,tp_lf = tire_pressure_in_kpa_lf,
+              tp_rf = tire_pressure_in_kpa_rf,  tp_lr = tire_pressure_in_kpa_lr,  tp_rr = tire_pressure_in_kpa_rr, 
+              oillife = remaining_oil_life)
+
+head(tele)
+## date parse
+tele$teledate<- as.Date(tele$teledate, format = "%Y-%m-%d %H:%M:%S.000000")
+
+
+## Summarize on day level
+telebyday<- tele%>%
+  group_by(VIN, teledate)%>%
+  summarise(count= n(), odo = max(odo), tp_lf = mean(tp_lf),tp_rf = mean(tp_rf),tp_lr = mean(tp_lr),tp_rr = mean(tp_rr),
+            oillife = min(oillife))
+
+
+##Incorporate delta for odometer and tire pressure
+telebyday <- telebyday %>%
+  group_by(VIN)%>%
+  mutate(ododelta =  odo - lag(odo), tpdelta = (tp_lf-lag(tp_lf)+tp_rf-lag(tp_rf)+tp_lr-lag(tp_lr)+tp_rr-lag(tp_rr))/4)
+
+
+
+
+sum(is.na(telebyday$oillife))
+nrow(telebyday)
+
+## append 
+joined<- left_join(fulldata, telebyday, by = c("VIN"= "VIN", "dateend" = "teledate"))
+
+# ### Remove oil life for now
+# joined$oillife<- NULL
+
+
+### 
+sum(is.na(joined$count))
+
+
+joined_cmplt<- joined[complete.cases(joined),]
+nrow(joined)
+nrow(joined_cmplt)
+
+nrow(joined_cmplt)
+
+
+fulldata<- joined_cmplt
+
+
+
+#### Join with make year model by vin#########################################
+library(dplyr)
+# Unique Vin from fulldata
+nrow(fulldata)
+length(unique(fulldata$VIN))
+
+
+vehicleinfo <- read.csv("fleetinfo_GM.csv")
+
+vehicleinfo<- subset(vehicleinfo, vehicleinfo$VIN %in% fulldata$VIN)
+length(unique(vehicleinfo$VIN_NO))
+# Select only useful columns
+vehicleinfo<- select(vehicleinfo,  VIN = VIN_NO, makemodel = MAKE_MODEL_DESC,vehicledate = VEHICLE_DELIVERY_DATE,
+                     class= CAR_CLASS_CODE, style = WIZ_BODY_TYPE_CODE, color = EXT_COLOR_CODE)
+vehicleinfo$vehicledate<- as.Date(vehicleinfo$vehicledate)
+
+# Select by first date to remove duplicate
+vehicleinfo<- vehicleinfo%>%
+  group_by(VIN)%>%
+  arrange(vehicledate) %>%
+  filter(row_number()==1)
+
+
+# append vehicle info to fulldata 
+
+fulldatavehicle<- left_join(fulldata, vehicleinfo, by = c("VIN" = "VIN"))
+
+# Calculate vehicle age in months
+library(zoo)
+
+fulldatavehicle$age<- (as.yearmon(strptime(fulldatavehicle$dateend, format = "%Y-%m-%d"))-
+                         as.yearmon(strptime(fulldatavehicle$vehicledate, format = "%Y-%m-%d")))*12
+
+# remove vehicle date variable
+fulldatavehicle$vehicledate<- NULL
+head(fulldatavehicle)
+
+datavalidate<- fulldatavehicle
+nrow(datavalidate)
+
+
+
+## Save a copy
+
+write.csv(datavalidate, file = "ValidateOctober.csv", row.names = FALSE)
+
+# 
+datavalidate<- read.csv("ValidateOctober.csv")
+
+datavalidate<- datavalidate[, !(colnames(datavalidate) %in% c("datestart","same","dateend", "VIN", "count"))]
+head(datavalidate)
+
+
+##### November as validation set###############################################
+##### DTC code##### 
+dtc<- read.csv("total_dtc.csv")
+head(dtc)
+
+# Parse date and select July and August only
+dtc$Date<- as.Date(dtc$Date, "%Y-%m-%d")
+dtc<- dtc[dtc$Date>= "2017-09-30" & dtc$Date <= "2017-11-30",]
+dtc$DTC_CODE<- as.character (dtc$DTC_CODE)
+
+dtc <- subset(dtc, select = c(2,5,6))
+
+# Transform dtc code
+dtc$value<- 1
+dtc.trans<- melt(dtc, id= 1:3)
+dtc.trans<- acast(dtc.trans, VIN + Date ~ DTC_CODE, sum)
+
+dtc.trans<- as.data.frame(dtc.trans)
+dtc.trans$id<- row.names(dtc.trans)
+
+# Split id to create vin and date
+dtc.trans$VIN<- sapply(FUN = function(x){
+  unlist(strsplit(x, "_"))[1]}, dtc.trans$id)
+
+dtc.trans$date<- sapply(FUN = function(x){
+  unlist(strsplit(x, "_"))[2]}, dtc.trans$id)
+# Manage row names and columns 
+rownames(dtc.trans) <- 1:nrow(dtc.trans)
+dtc.trans$id<- NULL
+dtc.trans<-dtc.trans[,c(ncol(dtc.trans)-1, ncol(dtc.trans), (1:(ncol(dtc.trans)-2)))]
+
+
+
+
+##### ERO DATA#####
+ero <- read.csv("DC_ERO_SUMMARY.csv")
+nrow(ero)
+
+# Deduplicate
+# ero<- ero [!duplicated(ero), ]
+# nrow(ero)
+
+##Select RO with only DTC VINs
+nrow(ero)
+ero<- subset(ero, ero$VIN %in% unique(dtc.trans$VIN))
+nrow(ero)
+
+
+# Filter on date
+ero$RO_OPENED <- as.Date(ero$RO_OPENED, format="%Y-%m-%d")
+ero.oct<- ero[(ero$RO_OPENED>= "2017-11-01" & ero$RO_OPENED<= "2017-11-30"), ]
+nrow(ero.oct)
+
+
+# remove city = AVIS according to business
+ero.oct <- ero.oct[ero.oct$CITY!= "AVIS", ]
+
+# Select only related columns
+ero.oct<- ero.oct[,c(1,4,6,7,13,17,21)]
+
+
+## Further cleansing ERO data
+# if same day, same car, exact cost, then remove duplicate
+ero.oct<- ero.oct %>%
+  distinct(VIN, RO_OPENED, RO_TOTAL, .keep_all = TRUE)
+nrow(ero.oct)
+# if same day, same car, different cost, then sum up
+ero.oct<- ero.oct %>% 
+  group_by(VIN, RO_OPENED) %>%
+  summarise_all(funs(sum))
+nrow(ero.oct)
+
+
+# ID 0 NID NOT 0
+ero.oct<- ero.oct[ero.oct$NID_TOTAL != 0 & ero.oct$ID_TOTAL == 0,]
+
+ero.oct$unique<- paste(ero.oct$VIN, ero.oct$RO_NUMBER, ero.oct$RO_OPENED)
+nrow(ero.oct)
+head(ero.oct)
+
+
+## further remove maintenance event
+erodetail<- read.csv("VIEW_DC_ERO_DATA.csv")
+
+#Unique identifier
+erodetail<- subset(erodetail, select = c(2,4,7,8,14,15))
+erodetail$unique<-paste(erodetail$VIN, erodetail$RO_NUMBER, erodetail$RO_OPENED)
+
+#Filter on only ERO from erolist on erodetail file  
+
+erodetail<- subset(erodetail, erodetail$unique %in% ero.oct$unique)
+
+#### go through RM list to classify RM from failure event
+library(dplyr)
+rmlist<- read.csv("Maintenance_codes.csv")
+erodetail$RM <- ifelse(erodetail$OP_CODE %in% rmlist$code, 1, 0)
+
+erolevel<- erodetail %>% 
+  group_by(unique, REGION, VIN, RO_NUMBER, RO_OPENED) %>%
+  summarise(total= n(), rmcount= sum(RM), cost = sum(RO_TOTAL))
+
+erolevel$perc<- round(erolevel$rmcount/erolevel$total,2)
+
+erolevel$event<- ifelse(erolevel$perc == 0, "Failure", 
+                        ifelse(erolevel$perc ==1, "RM", "Mixed"))
+
+## Remove purely RM events from ro list for 2 months
+
+erolevel_norm<- erolevel[(erolevel$event == "Failure" | erolevel$event == "Mixed"), ]
+
+ero.oct<- subset(ero.oct, ero.oct$unique %in% erolevel_norm$unique)
+
+ero.oct$unique<- NULL
+
+
+
+##### Join DTC data and RO data
+## Prepare ero.aug with time range
+ero.tr<- ero.oct[,c(1,2)]
+ero.tr$RO_OPENED<- as.Date(ero.tr$RO_OPENED)
+ero.tr$datestart<- ero.tr$RO_OPENED-31
+ero.tr$dateend<- ero.tr$RO_OPENED-1
+ero.tr$maintenance<- 1
+head(ero.tr)
+
+## Prepare RO full list
+daterange<- seq(as.Date("2017-10-30"), as.Date("2017-11-29"), "days")
+vin<- unique(ero.oct$VIN)
+fulldate<- expand.grid(VIN = vin, date =  daterange)
+head(fulldate)
+# Process date variables
+fulldate$datestart<- fulldate$date-30
+fulldate$dateend<- fulldate$date
+fulldate$date<- NULL
+head(fulldate)
+
+
+# merge full date list with positive maintenance event
+full<- merge(x= fulldate, y = ero.tr, by = c("VIN", "datestart","dateend"), all.x = TRUE)
+
+full$RO_OPENED<- NULL
+full$maintenance<- ifelse(is.na(full$maintenance), 0, 1)
+
+
+##Join with DTC code
+head(dtc.trans)
+head(full)
+dtc.trans$date<- as.Date(dtc.trans$date)
+
+### using apply to subset dtc code data frame
+
+library(pbapply)
+
+# Define subset function to parse through dtc code for each period
+subfun<- function(x, y){
+  dtcmatch<- subset(y, y$VIN == x[1] & 
+                      y$date >= x[2] &
+                      y$date <= x[3], 
+                    select = -c(VIN, date)) 
+  dtcmatch<- t(colSums(dtcmatch))
+}
+
+
+# pbapply through 2 month ro list
+# 220100 number of rows for RO list(full)
+combined<- pbapply(full, 1, function(x) subfun(x, dtc.trans))
+
+
+# process combined data
+combined_df<- as.data.frame(t(combined))
+colnames(combined_df)<- colnames(dtc.trans[,3:ncol(dtc.trans)])
+
+# Combine with fulldata columns (VIN, dates, maintenance)
+fulldata<- cbind(full, combined_df)
+
+# number of row on fulldata is : 220100
+nrow(fulldata)
+
+### Remove duplicate/bad record
+
+## Remove columns/codes that are all 0 
+fulldata<- fulldata[,!apply(fulldata,2,function(x) all(x==0))] 
+
+## Remove rows that codes are all 0
+fulldata$sum<- rowSums(fulldata[, 5:ncol(fulldata)])
+fulldata<- subset(fulldata, fulldata$sum!= 0)
+fulldata$sum<- NULL
+
+
+
+
+
+###Process fulldata to remove duplicate rows having same code#####
+# but keep if maintenance changes
+
+ncol(fulldata)
+nrow(fulldata)
+
+## append last day's data to following columns
+fulldatasub<- fulldata[,c(1, 4:182)]
+
+fulldatafirst<- fulldatasub[1,]
+
+fulldatasub<- rbind(fulldatafirst, fulldatasub)
+fulldatasub<- fulldatasub[1: (nrow(fulldatasub)-1),]
+
+colnames(fulldatasub) <- paste("t", colnames(fulldatasub), sep = "_")
+
+## combine last days data to fulldata dataframe
+
+fulldata_t<- cbind(fulldata, fulldatasub)
+
+
+#Define check same function in each row comparing code and last day code
+checksame<- function(x){
+  same<-ifelse(all(x[c(1,4:182)] == x[c(183,184:362)]),
+               0,
+               ifelse(all(x[c(1,5:182)] == x[c(183,185:362)])& x[4]==0,0,1))
+}
+
+## pbapply to all data in fulldata
+
+same<- pbapply(fulldata_t, 1, function(x) checksame(x))
+
+
+
+# Parse result to cbind to fulldata data frame
+same<- as.data.frame(same)
+fulldata<- cbind(fulldata,same)
+
+# Assign the first record to be 1 as well
+fulldata[1,ncol(fulldata)]<- 1
+
+# Check same column distribution; 0 means same, 1 means different to keep
+data.frame(table(fulldata$same))
+
+
+
+fulldata<- subset(fulldata, same == 1)
+
+
+nrow(fulldata)
+
+
+
+
+##### Join Telemetic data to validation month data#####################################
+library(dplyr)
+head(fulldata)
+fulldata$dateend<- as.Date(fulldata$dateend)
+
+## Clean/select only needed columns
+tele<- read.csv("telematic_nov.csv")
+tele<- subset(tele, tele$vin_no %in% unique(fulldata$VIN))
+
+
+tele<- select(tele,  VIN = vin_no, odo = odometer_in_miles,teledate = dw_last_upd_dtti ,tp_lf = tire_pressure_in_kpa_lf,
+              tp_rf = tire_pressure_in_kpa_rf,  tp_lr = tire_pressure_in_kpa_lr,  tp_rr = tire_pressure_in_kpa_rr, 
+              oillife = remaining_oil_life)
+
+head(tele)
+## date parse
+tele$teledate<- as.Date(tele$teledate, format = "%Y-%m-%d %H:%M:%S.000000")
+
+
+## Summarize on day level
+telebyday<- tele%>%
+  group_by(VIN, teledate)%>%
+  summarise(count= n(), odo = max(odo), tp_lf = mean(tp_lf),tp_rf = mean(tp_rf),tp_lr = mean(tp_lr),tp_rr = mean(tp_rr),
+            oillife = min(oillife))
+
+
+##Incorporate delta for odometer and tire pressure
+telebyday <- telebyday %>%
+  group_by(VIN)%>%
+  mutate(ododelta =  odo - lag(odo), tpdelta = (tp_lf-lag(tp_lf)+tp_rf-lag(tp_rf)+tp_lr-lag(tp_lr)+tp_rr-lag(tp_rr))/4)
+
+
+
+
+sum(is.na(telebyday$oillife))
+nrow(telebyday)
+
+## append 
+joined<- left_join(fulldata, telebyday, by = c("VIN"= "VIN", "dateend" = "teledate"))
+
+# ### Remove oil life for now
+# joined$oillife<- NULL
+
+
+### 
+sum(is.na(joined$count))
+
+
+joined_cmplt<- joined[complete.cases(joined),]
+nrow(joined)
+nrow(joined_cmplt)
+
+nrow(joined_cmplt)
+
+
+fulldata<- joined_cmplt
+
+
+
+#### Join with make year model by vin#########################################
+library(dplyr)
+# Unique Vin from fulldata
+nrow(fulldata)
+length(unique(fulldata$VIN))
+
+
+vehicleinfo <- read.csv("fleetinfo_GM.csv")
+
+vehicleinfo<- subset(vehicleinfo, vehicleinfo$VIN %in% fulldata$VIN)
+length(unique(vehicleinfo$VIN_NO))
+# Select only useful columns
+vehicleinfo<- select(vehicleinfo,  VIN = VIN_NO, makemodel = MAKE_MODEL_DESC,vehicledate = VEHICLE_DELIVERY_DATE,
+                     class= CAR_CLASS_CODE, style = WIZ_BODY_TYPE_CODE, color = EXT_COLOR_CODE)
+vehicleinfo$vehicledate<- as.Date(vehicleinfo$vehicledate)
+
+# Select by first date to remove duplicate
+vehicleinfo<- vehicleinfo%>%
+  group_by(VIN)%>%
+  arrange(vehicledate) %>%
+  filter(row_number()==1)
+
+
+# append vehicle info to fulldata 
+
+fulldatavehicle<- left_join(fulldata, vehicleinfo, by = c("VIN" = "VIN"))
+
+# Calculate vehicle age in months
+library(zoo)
+
+fulldatavehicle$age<- (as.yearmon(strptime(fulldatavehicle$dateend, format = "%Y-%m-%d"))-
+                         as.yearmon(strptime(fulldatavehicle$vehicledate, format = "%Y-%m-%d")))*12
+
+# remove vehicle date variable
+fulldatavehicle$vehicledate<- NULL
+head(fulldatavehicle)
+
+datavalidate<- fulldatavehicle
+nrow(datavalidate)
+
+
+
+## Save a copy
+
+write.csv(datavalidate, file = "ValidateNovember.csv", row.names = FALSE)
+
+# 
+datavalidate<- read.csv("ValidateNovember.csv")
+
+datavalidate<- datavalidate[, !(colnames(datavalidate) %in% c("datestart","same","dateend", "VIN", "count"))]
+head(datavalidate)
+
+#### Validate using GBM ########################################
+
+model_gbm
+h2o.varimp_plot(model_gbm)
+
+
+h2o <- h2o.init()
+validate_h2o<- as.h2o(datavalidate)
+
+## Predict using the best model
+predict<- h2o.predict(model_gbm, newdata = validate_h2o)
+predict<- as.data.frame(predict)
+predict<- cbind(predict, datavalidate$maintenance)
+
+nrow(predict[predict$predict == 1 & predict$`datavalidate$maintenance` ==1|
+               predict$predict == 0 & predict$`datavalidate$maintenance` ==0,])
+
+nrow(predict[predict$predict == 1 & predict$`datavalidate$maintenance` ==1,])
+nrow(predict[predict$predict == 1 & predict$`datavalidate$maintenance` ==0,])
+nrow(predict[predict$predict == 0 & predict$`datavalidate$maintenance` ==1,])
+
+data.frame(table(datavalidate$maintenance))
+
+## Find proper threshold by introducing loss function
+
+
+# create function to calculate cost for at each threshold
+costfun<- function(threshold, predict, truth, FPcost, TPcost, FNcost){
+  data<- data.frame(predict, truth)
+  data$res<- ifelse(data$predict>=threshold, 1,0)
+  FP <- nrow(data[data$res == 1 & data$truth ==0,])
+  FN <- nrow(data[data$res == 0 & data$truth ==1,])
+  TP <-  nrow(data[data$res == 1 & data$truth ==1,])
+  cost<- FPcost*FP + TPcost * TP + FNcost * FN
+  return(cost)
+}
+
+## go through threshold to minimize cost
+projectedcost<- data.frame()
+threshold <- list(0)
+cost<- list(0)
+for (i in seq(0, 1, by=0.001)){
+  threshold<- append(threshold,i)
+  cost<- append(cost, costfun(i, predict =predict$p1, truth = predict$`datavalidate$maintenance`, 33, 85,255))
+}
+projectedcost<- as.data.frame(cbind(threshold, cost))
+
+
+# Visulization###
+library(ggplot2)
+library(scales)
+
+
+projectedcost<- projectedcost[-1,]
+
+projectedcost$threshold<- as.numeric(projectedcost$threshold)
+projectedcost$cost<- as.numeric(projectedcost$cost)
+
+ggplot(projectedcost, aes(threshold, cost))+
+  geom_line() +scale_y_continuous(labels = comma)+
+  geom_point(data = projectedcost[which.min(projectedcost$cost),], aes(threshold, cost), colour="red", size=1.5)+
+  theme_bw()+
+  labs(title = "Projected Cost with GBM Model - November",
+       x = "Threshold", y = "Cost") 
+
+projectedcost[which.min(projectedcost$cost),]
+
+
+
+min(projectedcost$cost)
+
+
+
+predict$newres<- ifelse(predict$p1>=0.147, 1,0)
+
+FP <- nrow(predict[predict$newres == 1 & predict$`datavalidate$maintenance` ==0,])
+FN <- nrow(predict[predict$newres == 0 & predict$`datavalidate$maintenance` ==1,])
+TP <-  nrow(predict[predict$newres == 1 & predict$`datavalidate$maintenance` ==1,])
+TN<- nrow(predict[predict$newres == 0 & predict$`datavalidate$maintenance` ==0,])
+
+confusionmatrix<- matrix(c(TN, FP, FN, TP),ncol =2,byrow=TRUE)
+colnames(confusionmatrix) <- c("0", "1")
+rownames(confusionmatrix) <- c("0", "1")
+confusionmatrix
+
+
+
+
+
+
